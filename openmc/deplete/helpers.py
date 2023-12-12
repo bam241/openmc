@@ -418,7 +418,7 @@ class EnergyNormalizationHelper(NormalizationHelper):
         # Reduce energy produced from all processes
         # J / source neutron
         energy = comm.allreduce(self._energy) * JOULE_PER_EV
-
+        print("energy", energy)
         # Guard against divide by zero
         if energy == 0:
             if comm.rank == 0:
