@@ -462,6 +462,7 @@ class CoupledOperator(OpenMCOperator):
                 for nuc in number_i.nuclides:
                     if nuc in self.nuclides_with_data:
                         val = 1.0e-24 * number_i.get_atom_density(mat, nuc)
+                        print(nuc, val)
 
                         # If nuclide is zero, do not add to the problem.
                         if val > 0.0:
@@ -488,6 +489,7 @@ class CoupledOperator(OpenMCOperator):
 
                 # Update densities on C API side
                 mat_internal = openmc.lib.materials[int(mat)]
+                print(int(mat), nuclides, densities)
                 mat_internal.set_densities(nuclides, densities)
 
                 # TODO Update densities on the Python side, otherwise the
