@@ -235,6 +235,7 @@ class CoupledOperator(OpenMCOperator):
                     self._fission_helpers.keys())
         check_value('normalization mode', normalization_mode,
                     ('energy-deposition', 'fission-q', 'source-rate'))
+        print("normalization_mode", normalization_mode)
         if normalization_mode != "fission-q":
             if fission_q is not None:
                 warn("Fission Q dictionary will not be used")
