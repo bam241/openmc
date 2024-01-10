@@ -79,7 +79,7 @@ class IPFCramSolver(DepSystemSolver):
         y = n0.copy()
         ident = sp.eye(A.shape[0])
         for alpha, theta in zip(self.alpha, self.theta):
-            y += 2*np.real(alpha*sla.spsolve(A - theta*ident, y, permc_spec=NATURAL))
+            y += 2*np.real(alpha*sla.spsolve(A - theta*ident, y, permc_spec='NATURAL'))
         return y * self.alpha0
 
 
