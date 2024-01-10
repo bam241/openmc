@@ -539,10 +539,8 @@ class OpenMCOperator(TransportOperator):
 
             # Divide by [b-cm] to get [(reactions/src)/atom]
             rates[i] = tally_rates / volume_b_cm
-            print("mat ", i, rates[i])
 
         # Scale reaction rates to obtain units of [(reactions/sec)/atom]
-        print("scaling", self._normalization_helper.factor(source_rate))
         rates *= self._normalization_helper.factor(source_rate)
 
         # Store new fission yields on the chain
