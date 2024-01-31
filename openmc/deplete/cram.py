@@ -55,7 +55,7 @@ class IPFCramSolver(DepSystemSolver):
         self.theta = theta
         self.alpha0 = alpha0
 
-    def __call__(self, A, n0, dt):
+    def __call__(self, A, n0, dt, **sla_spsolve_args):
         """Solve depletion equations using IPF CRAM
 
         Parameters
@@ -79,7 +79,7 @@ class IPFCramSolver(DepSystemSolver):
         y = n0.copy()
         ident = sp.eye(A.shape[0], format='csc')
         for alpha, theta in zip(self.alpha, self.theta):
-            y += 2*np.real(alpha*sla.spsolve(A - theta*ident, y))
+            y += 2*np.real(alpha*sla.spsolve(A - theta*ident, y, **sla_spsolve_args))
         return y * self.alpha0
 
 
