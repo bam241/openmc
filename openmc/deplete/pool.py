@@ -158,7 +158,7 @@ def deplete(func, chain, n, rates, dt, matrix_func=None, transfer_rates=None,
 
             return n_result
 
-    inputs = zip(matrices, n, repeat(dt), **func_kwargs)
+    inputs = zip(matrices, n, repeat(dt), repeat(**func_kwargs))
 
     if USE_MULTIPROCESSING:
         with Pool(NUM_PROCESSES) as pool:
