@@ -70,8 +70,8 @@ def deplete(func, chain, n, rates, dt, matrix_func=None, transfer_rates=None,
     matrix_args: Any, optional
         Additional arguments passed to matrix_func
 
-    func_kwargs: optional, All keyword arguments are passed to the func
-        computing the new compisitions.
+    func_kwargs: optional, additional keyword arguments to be passed to the
+        solver func computing the new compositions.
 
     Returns
     -------
