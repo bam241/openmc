@@ -1068,6 +1068,7 @@ class Chain:
             after following up to ``level`` reactions and decay paths
 
         """
+        print("IN REDUCE CHAIN")
         check_type("initial_isotopes", initial_isotopes, Iterable, str)
         if level is None:
             level = math.inf
