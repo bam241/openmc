@@ -9,6 +9,7 @@ import warnings
 
 import h5py
 import lxml.etree as ET
+import numpy as np
 
 import openmc
 import openmc._xml as xml
@@ -16,6 +17,7 @@ from openmc.dummy_comm import DummyCommunicator
 from openmc.executor import _process_CLI_arguments
 from openmc.checkvalue import check_type, check_value, PathLike
 from openmc.exceptions import InvalidIDError
+import openmc.lib
 from openmc.utility_funcs import change_directory
 
 
@@ -322,6 +324,28 @@ class Model:
         # the user-provided intracomm which will either be None or an mpi4py
         # communicator
         openmc.lib.init(args=args, intracomm=intracomm, output=output)
+
+    def sync_dagmc_universe(self):
+        """
+        Synchronize all DAGMC universes with the current geometry.
+        This method iterates over all DAGMC universes in the geometry and
+        synchronizes their cells with the current material assignments.
+
+        .. versionadded:: 0.15.1-dev
+
+        Returns:
+            None
+        """
+        if self.is_initialized:
+            if self.materials:
+                materials = self.materials
+            else:
+                materials = self.geometry.get_all_materials().values()
+            for dagmc_universe in self.geometry.get_all_dagmc_universes().values():
+                dagmc_universe.sync_dagmc_cells(materials)
+        else:
+            raise ValueError("The model must be initialized before calling "
+                             "this method")
 
     def finalize_lib(self):
         """Finalize simulation and free memory allocated for the C API
@@ -793,6 +817,121 @@ class Model:
                             openmc.lib.materials[domain_id].volume = \
                                 vol_calc.volumes[domain_id].n
 
+    def plot(
+        self,
+        n_samples: int | None = None,
+        plane_tolerance: float = 1.,
+        source_kwargs: dict | None = None,
+        **kwargs,
+    ):
+        """Display a slice plot of the geometry.
+
+        .. versionadded:: 0.15.1
+
+        Parameters
+        ----------
+        n_samples : dict
+            The number of source particles to sample and add to plot. Defaults
+            to None which doesn't plot any particles on the plot.
+        plane_tolerance: float
+            When plotting a plane the source locations within the plane +/-
+            the plane_tolerance will be included and those outside of the
+            plane_tolerance will not be shown
+        source_kwargs : dict
+            Keyword arguments passed to :func:`matplotlib.pyplot.scatter`.
+        **kwargs
+            Keyword arguments passed to :func:`openmc.Universe.plot`
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            Axes containing resulting image
+        """
+
+        check_type('n_samples', n_samples, int | None)
+        check_type('plane_tolerance', plane_tolerance, float)
+        if source_kwargs is None:
+            source_kwargs = {}
+        source_kwargs.setdefault('marker', 'x')
+
+        ax = self.geometry.plot(**kwargs)
+        if n_samples:
+            # Sample external source particles
+            particles = self.sample_external_source(n_samples)
+
+            # Determine plotting parameters and bounding box of geometry
+            bbox = self.geometry.bounding_box
+            origin = kwargs.get('origin', None)
+            basis = kwargs.get('basis', 'xy')
+            indices = {'xy': (0, 1, 2), 'xz': (0, 2, 1), 'yz': (1, 2, 0)}[basis]
+
+            # Infer origin if not provided
+            if np.isinf(bbox.extent[basis]).any():
+                if origin is None:
+                    origin = (0, 0, 0)
+            else:
+                if origin is None:
+                    # if nan values in the bbox.center they get replaced with 0.0
+                    # this happens when the bounding_box contains inf values
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", RuntimeWarning)
+                        origin = np.nan_to_num(bbox.center)
+
+            slice_index = indices[2]
+            slice_value = origin[slice_index]
+
+            xs = []
+            ys = []
+            tol = plane_tolerance
+            for particle in particles:
+                if (slice_value - tol < particle.r[slice_index] < slice_value + tol):
+                    xs.append(particle.r[indices[0]])
+                    ys.append(particle.r[indices[1]])
+            ax.scatter(xs, ys, **source_kwargs)
+        return ax
+
+    def sample_external_source(
+            self,
+            n_samples: int = 1000,
+            prn_seed: int | None = None,
+            **init_kwargs
+    ) -> list[openmc.SourceParticle]:
+        """Sample external source and return source particles.
+
+        .. versionadded:: 0.15.1
+
+        Parameters
+        ----------
+        n_samples : int
+            Number of samples
+        prn_seed : int
+            Pseudorandom number generator (PRNG) seed; if None, one will be
+            generated randomly.
+        **init_kwargs
+            Keyword arguments passed to :func:`openmc.lib.init`
+
+        Returns
+        -------
+        list of openmc.SourceParticle
+            List of samples source particles
+        """
+        import openmc.lib
+
+        # Silence output by default. Also set arguments to start in volume
+        # calculation mode to avoid loading cross sections
+        init_kwargs.setdefault('output', False)
+        init_kwargs.setdefault('args', ['-c'])
+
+        with change_directory(tmpdir=True):
+            # Export model within temporary directory
+            self.export_to_model_xml()
+
+            # Sample external source sites
+            with openmc.lib.run_in_memory(**init_kwargs):
+                return openmc.lib.sample_external_source(
+                    n_samples=n_samples, prn_seed=prn_seed
+                )
+
     def plot_geometry(self, output=True, cwd='.', openmc_exec='openmc'):
         """Creates plot images as specified by the Model.plots attribute
 
@@ -1013,32 +1152,63 @@ class Model:
 
         self._change_py_lib_attribs(names_or_ids, volume, 'material', 'volume')
 
-    def differentiate_depletable_mats(self, diff_volume_method: str):
+    def differentiate_depletable_mats(self, diff_volume_method : str = None):
         """Assign distribmats for each depletable material
 
         .. versionadded:: 0.14.0
+
+        .. version added:: 0.15.1-dev
+            diff_volume_method default is None, do not apply volume to the new
+            materials. Is now a convenience method for
+            differentiate_mats(diff_volume_method, depletable_only=True)
 
         Parameters
         ----------
         diff_volume_method : str
             Specifies how the volumes of the new materials should be found.
-            Default is to 'divide equally' which divides the original material
-            volume equally between the new materials, 'match cell' sets the
-            volume of the material to volume of the cell they fill.
+            Default is to 'None', do not apply volume to the new materials,
+            'divide equally' which divides the original material
+            volume equally between the new materials,
+            'match cell' sets the volume of the material to volume of the cell
+            they fill.
         """
+        self.differentiate_mats(diff_volume_method, depletable_only=True)
+
+    def differentiate_mats(self, diff_volume_method: str = None, depletable_only: bool = True):
+        """Assign distribmats for each material
+
+        .. versionadded:: 0.15.1-dev
+
+        Parameters
+        ----------
+        diff_volume_method : str
+            Specifies how the volumes of the new materials should be found.
+            Default is to 'None', do not apply volume to the new materials, 
+            'divide equally' which divides the original material
+            volume equally between the new materials, 
+            'match cell' sets the volume of the material to volume of the cell 
+            they fill.
+        depletable_only : bool
+            Default is True, only depletable materials will be differentiated all materials will be 
+            differentiated otherwise.
+        """
+        check_value('volume differentiation method', diff_volume_method, ["divide equally", "match cell", None])
+
         # Count the number of instances for each cell and material
         self.geometry.determine_paths(instances_only=True)
 
-        # Extract all depletable materials which have multiple instances
+        # Extract all or depletable_only materials which have multiple instance
         distribmats = set(
             [mat for mat in self.materials
-                if mat.depletable and mat.num_instances > 1])
+                if (mat.depletable or not depletable_only) and mat.num_instances > 1])
 
-        if diff_volume_method == 'divide equally':
+        if diff_volume_method == "divide equally":
             for mat in distribmats:
                 if mat.volume is None:
-                    raise RuntimeError("Volume not specified for depletable "
-                                        f"material with ID={mat.id}.")
+                    raise RuntimeError(
+                        "Volume not specified for depletable "
+                        f"material with ID={mat.id}."
+                    )
                 mat.volume /= mat.num_instances
 
         if distribmats:
@@ -1046,11 +1216,11 @@ class Model:
             for cell in self.geometry.get_all_material_cells().values():
                 if cell.fill in distribmats:
                     mat = cell.fill
-                    if diff_volume_method == 'divide equally':
+                    if diff_volume_method != 'match cell':
                         cell.fill = [mat.clone() for _ in range(cell.num_instances)]
                     elif diff_volume_method == 'match cell':
-                        for _ in range(cell.num_instances):
-                            cell.fill = mat.clone()
+                        cell.fill = mat.clone()
+                        for i in range(cell.num_instances):
                             if not cell.volume:
                                 raise ValueError(
                                     f"Volume of cell ID={cell.id} not specified. "
@@ -1058,6 +1228,9 @@ class Model:
                                     "diff_volume_method='match cell'."
                                 )
                             cell.fill.volume = cell.volume
+                    if isinstance(cell, openmc.DAGMCCell):
+                        for i in range(cell.num_instances):
+                            cell.fill[i].name = f"{cell.fill[i].name}_{cell.id}_{i}"
 
         if self.materials is not None:
             self.materials = openmc.Materials(

@@ -11,7 +11,7 @@
 #include "openmc/settings.h"
 #include "openmc/string_utils.h"
 
-#ifdef UWUW
+#ifdef OPENMC_UWUW
 #include "uwuw.hpp"
 #endif
 #include <fmt/core.h>
@@ -29,7 +29,7 @@ const bool DAGMC_ENABLED = true;
 const bool DAGMC_ENABLED = false;
 #endif
 
-#ifdef UWUW
+#ifdef OPENMC_UWUW
 const bool UWUW_ENABLED = true;
 #else
 const bool UWUW_ENABLED = false;
@@ -72,6 +72,25 @@ DAGUniverse::DAGUniverse(pugi::xml_node node)
     adjust_material_ids_ = get_node_value_bool(node, "auto_mat_ids");
   }
 
+  // get material assignment overloading
+  if (check_for_node(node, "material_overrides")) {
+    auto mat_node = node.child("material_overrides");
+    // loop over all attributes (each attribute corresponds to a material)
+    for (pugi::xml_attribute attr = mat_node.first_attribute(); attr;
+         attr = attr.next_attribute()) {
+      // Store assignment reference name
+      std::string mat_ref_assignment = attr.name();
+
+      // Get mat name for each assignement instances
+      std::stringstream iss {attr.value()};
+      vector<std::string> instance_mats = split(iss.str());
+
+      // Store mat name for each instances
+      instance_material_overrides.insert(
+        std::make_pair(mat_ref_assignment, instance_mats));
+    }
+  }
+
   initialize();
 }
 
@@ -111,6 +130,11 @@ void DAGUniverse::set_id()
 void DAGUniverse::initialize()
 {
   geom_type() = GeometryType::DAG;
+
+#ifdef OPENMC_UWUW
+  // read uwuw materials from the .h5m file if present
+  read_uwuw_materials();
+#endif
 
   init_dagmc();
 
@@ -206,7 +230,6 @@ void DAGUniverse::init_geometry()
     if (mat_str == "graveyard") {
       graveyard = vol_handle;
     }
-
     // material void checks
     if (mat_str == "void" || mat_str == "vacuum" || mat_str == "graveyard") {
       c->material_.push_back(MATERIAL_VOID);
@@ -214,7 +237,37 @@ void DAGUniverse::init_geometry()
       if (uses_uwuw()) {
         uwuw_assign_material(vol_handle, c);
       } else {
-        legacy_assign_material(mat_str, c);
+        if (instance_material_overrides.count(std::to_string(c->id_))) {
+          int n_override =
+            instance_material_overrides.at(std::to_string(c->id_)).size();
+          if (n_override != c->n_instances_) {
+            fatal_error(fmt::format("material_overrides has for Cell {} has {}"
+                                    "material assignments for this material, "
+                                    "where the cell has {} instances.",
+              c->id_, n_override, c->n_instances_));
+          }
+
+          for (auto mat_str_instance :
+            instance_material_overrides.at(mat_str)) {
+            legacy_assign_material(mat_str_instance, c);
+          }
+        } else if (instance_material_overrides.count(mat_str)) {
+          int n_override = instance_material_overrides.at(mat_str).size();
+          if (n_override != c->n_instances_) {
+            fatal_error(
+              fmt::format("DAGMC Cell assigned with material {} has {} "
+                          "instances but material_overrides has {} "
+                          "material assignments for this material",
+                mat_str, c->n_instances_, n_override));
+          }
+
+          for (auto mat_str_instance :
+            instance_material_overrides.at(mat_str)) {
+            legacy_assign_material(mat_str_instance, c);
+          }
+        } else {
+          legacy_assign_material(mat_str, c);
+        }
       }
     }
 
@@ -431,16 +484,16 @@ void DAGUniverse::to_hdf5(hid_t universes_group) const
 
 bool DAGUniverse::uses_uwuw() const
 {
-#ifdef UWUW
+#ifdef OPENMC_UWUW
   return uwuw_ && !uwuw_->material_library.empty();
 #else
   return false;
-#endif // UWUW
+#endif // OPENMC_UWUW
 }
 
 std::string DAGUniverse::get_uwuw_materials_xml() const
 {
-#ifdef UWUW
+#ifdef OPENMC_UWUW
   if (!uses_uwuw()) {
     throw std::runtime_error("This DAGMC Universe does not use UWUW materials");
   }
@@ -460,12 +513,12 @@ std::string DAGUniverse::get_uwuw_materials_xml() const
   return ss.str();
 #else
   fatal_error("DAGMC was not configured with UWUW.");
-#endif // UWUW
+#endif // OPENMC_UWUW
 }
 
 void DAGUniverse::write_uwuw_materials_xml(const std::string& outfile) const
 {
-#ifdef UWUW
+#ifdef OPENMC_UWUW
   if (!uses_uwuw()) {
     throw std::runtime_error(
       "This DAGMC universe does not use UWUW materials.");
@@ -478,7 +531,7 @@ void DAGUniverse::write_uwuw_materials_xml(const std::string& outfile) const
   mats_xml.close();
 #else
   fatal_error("DAGMC was not configured with UWUW.");
-#endif
+#endif // OPENMC_UWUW
 }
 
 void DAGUniverse::legacy_assign_material(
@@ -540,7 +593,7 @@ void DAGUniverse::legacy_assign_material(
 
 void DAGUniverse::read_uwuw_materials()
 {
-#ifdef UWUW
+#ifdef OPENMC_UWUW
   // If no filename was provided, don't read UWUW materials
   if (filename_ == "")
     return;
@@ -580,16 +633,13 @@ void DAGUniverse::read_uwuw_materials()
   }
 #else
   fatal_error("DAGMC was not configured with UWUW.");
-#endif
+#endif // OPENMC_UWUW
 }
 
 void DAGUniverse::uwuw_assign_material(
   moab::EntityHandle vol_handle, std::unique_ptr<DAGCell>& c) const
 {
-#ifdef UWUW
-  // read materials from uwuw material file
-  read_uwuw_materials();
-
+#ifdef OPENMC_UWUW
   // lookup material in uwuw if present
   std::string uwuw_mat = dmd_ptr->volume_material_property_data_eh[vol_handle];
   if (uwuw_->material_library.count(uwuw_mat) != 0) {
@@ -601,11 +651,11 @@ void DAGUniverse::uwuw_assign_material(
   } else {
     fatal_error(fmt::format("Material with value '{}' not found in the "
                             "UWUW material library",
-      mat_str));
+      uwuw_mat));
   }
 #else
   fatal_error("DAGMC was not configured with UWUW.");
-#endif
+#endif // OPENMC_UWUW
 }
 //==============================================================================
 // DAGMC Cell implementation
@@ -614,7 +664,7 @@ void DAGUniverse::uwuw_assign_material(
 DAGCell::DAGCell(std::shared_ptr<moab::DagMC> dag_ptr, int32_t dag_idx)
   : Cell {}, dagmc_ptr_(dag_ptr), dag_index_(dag_idx)
 {
-  geom_type_ = GeometryType::DAG;
+  geom_type() = GeometryType::DAG;
 };
 
 std::pair<double, int32_t> DAGCell::distance(
@@ -717,7 +767,7 @@ BoundingBox DAGCell::bounding_box() const
 DAGSurface::DAGSurface(std::shared_ptr<moab::DagMC> dag_ptr, int32_t dag_idx)
   : Surface {}, dagmc_ptr_(dag_ptr), dag_index_(dag_idx)
 {
-  geom_type_ = GeometryType::DAG;
+  geom_type() = GeometryType::DAG;
 } // empty constructor
 
 moab::EntityHandle DAGSurface::mesh_handle() const
@@ -816,11 +866,49 @@ int32_t next_cell(int32_t surf, int32_t curr_cell, int32_t univ)
   return univp->cell_index(new_vol);
 }
 
+extern "C" int openmc_dagmc_universe_get_cell_ids(
+  int32_t univ_id, int32_t* ids, size_t* n)
+{
+  // make sure the universe id is a DAGMC Universe
+  const auto& univ = model::universes[model::universe_map[univ_id]];
+  if (univ->geom_type() != GeometryType::DAG) {
+    fatal_error(
+      "Universe " + std::to_string(univ_id) + " is not a DAGMC Universe!");
+  }
+
+  std::vector<int32_t> dag_cell_ids;
+  for (const auto& cell_index : univ->cells_) {
+    const auto& cell = model::cells[cell_index];
+    if (cell->geom_type() == GeometryType::DAG)
+      dag_cell_ids.push_back(cell->id_);
+  }
+  std::copy(dag_cell_ids.begin(), dag_cell_ids.end(), ids);
+  *n = dag_cell_ids.size();
+}
+
+extern "C" int openmc_dagmc_universe_get_num_cells(int32_t univ_id, size_t* n)
+{
+  // make sure the universe id is a DAGMC Universe
+  const auto& univ = model::universes[model::universe_map[univ_id]];
+  if (univ->geom_type() != GeometryType::DAG) {
+    fatal_error(
+      "Universe " + std::to_string(univ_id) + " is not a DAGMC Universe");
+  }
+
+  *n = univ->cells_.size();
+}
+
 } // namespace openmc
 
 #else
 
 namespace openmc {
+
+extern "C" int openmc_dagmc_universe_get_cell_ids(
+  int32_t univ_id, int32_t* ids, size_t* n) {};
+
+extern "C" int openmc_dagmc_universe_get_num_cells(
+  int32_t univ_id, size_t* n) {};
 
 void read_dagmc_universes(pugi::xml_node node)
 {
